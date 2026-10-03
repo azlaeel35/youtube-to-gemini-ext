@@ -15,16 +15,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     let rawUrl = info.linkUrl || info.pageUrl;
     
     if (rawUrl) {
-      // --- 【追加】YouTubeのURLを綺麗な形（watch?v=XXXXXXXXXXX）に成型する ---
       const cleanYoutubeUrl = (url) => {
         try {
           const urlObj = new URL(url);
-          // 通常のwatch?v=形式の場合
           const videoId = urlObj.searchParams.get('v');
           if (videoId) {
             return `https://www.youtube.com/watch?v=${videoId}`;
           }
-          // 埋め込み(embed/)形式の場合 (/embed/VIDEO_ID)
           if (urlObj.pathname.includes('/embed/')) {
             const parts = urlObj.pathname.split('/');
             const embedId = parts[parts.indexOf('embed') + 1];
@@ -35,12 +32,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         } catch (e) {
           console.error('URLの解析に失敗しました:', e);
         }
-        // 万が一パースに失敗した場合は、最低限「&」以降を削るフォールバック
         return url.split('&')[0];
       };
 
       const youtubeUrl = cleanYoutubeUrl(rawUrl);
       const queryText = `動画内容の概要を作成してください: ${youtubeUrl}`;
+      const retryText = `先ほどの動画の内容が正しく読み込めなかったようです。もう一度リンク先を確認して概要を作成してください: ${youtubeUrl}`;
       const geminiUrl = "https://gemini.google.com/app";
 
       chrome.tabs.create({ url: geminiUrl }, (newTab) => {
@@ -50,14 +47,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
             
             chrome.scripting.executeScript({
               target: { tabId: newTab.id },
-              func: (text) => {
+              func: (initialText, retryText) => {
                 let attempts = 0;
                 const maxAttempts = 30;
                 const interval = 600;
 
-                const tryFillAndSend = () => {
+                const sendMessage = (text) => {
                   const form = document.querySelector('div[contenteditable="true"]');
-                  
                   if (form) {
                     form.focus();
                     document.execCommand('insertText', false, text);
@@ -65,7 +61,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
                     setTimeout(() => {
                       const sendButton = document.querySelector('button[aria-label="送信"], button[aria-label="メッセージを送信"], button[aria-label="Send message"]');
-                      
                       if (sendButton && !sendButton.disabled) {
                         sendButton.click();
                       } else {
@@ -78,16 +73,55 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                         form.dispatchEvent(enterEvent);
                       }
                     }, 500);
-
-                  } else if (attempts < maxAttempts) {
-                    attempts++;
-                    setTimeout(tryFillAndSend, interval);
                   }
                 };
 
-                tryFillAndSend();
+                // 成功を検知してリトライをキャンセルし、タイムアウトしたら自動リトライする方式
+                let isResolved = false;
+                
+                const watchForSuccessOrTimeout = () => {
+                  // 12秒経っても成功ワードが出なかったら「失敗した可能性が高い」とみなして自動リトライ
+                  const timeoutTimer = setTimeout(() => {
+                    if (!isResolved) {
+                      isResolved = true;
+                      obs.disconnect();
+                      sendMessage(retryText);
+                    }
+                  }, 12000);
+
+                  const obs = new MutationObserver((mutations, observer) => {
+                    if (isResolved) return;
+
+                    const pageText = document.body.innerText;
+                    
+                    // 成功時の定番キーワードが含まれているかチェック
+                    if (pageText.includes("概要は以下の通りです") || pageText.includes("の概要")) {
+                      isResolved = true;
+                      clearTimeout(timeoutTimer); // タイムアウトを解除（成功確定）
+                      observer.disconnect();      // 監視終了
+                    }
+                  });
+
+                  obs.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                  });
+                };
+
+                const tryInitialSend = () => {
+                  const form = document.querySelector('div[contenteditable="true"]');
+                  if (form) {
+                    sendMessage(initialText);
+                    watchForSuccessOrTimeout(); // 成功監視とタイムアウト判定を開始
+                  } else if (attempts < maxAttempts) {
+                    attempts++;
+                    setTimeout(tryInitialSend, interval);
+                  }
+                };
+
+                tryInitialSend();
               },
-              args: [queryText]
+              args: [queryText, retryText]
             });
           }
         });
