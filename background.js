@@ -12,9 +12,34 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "geminiSummarize") {
-    const youtubeUrl = info.linkUrl || info.pageUrl;
+    let rawUrl = info.linkUrl || info.pageUrl;
     
-    if (youtubeUrl) {
+    if (rawUrl) {
+      // --- 【追加】YouTubeのURLを綺麗な形（watch?v=XXXXXXXXXXX）に成型する ---
+      const cleanYoutubeUrl = (url) => {
+        try {
+          const urlObj = new URL(url);
+          // 通常のwatch?v=形式の場合
+          const videoId = urlObj.searchParams.get('v');
+          if (videoId) {
+            return `https://www.youtube.com/watch?v=${videoId}`;
+          }
+          // 埋め込み(embed/)形式の場合 (/embed/VIDEO_ID)
+          if (urlObj.pathname.includes('/embed/')) {
+            const parts = urlObj.pathname.split('/');
+            const embedId = parts[parts.indexOf('embed') + 1];
+            if (embedId) {
+              return `https://www.youtube.com/watch?v=${embedId}`;
+            }
+          }
+        } catch (e) {
+          console.error('URLの解析に失敗しました:', e);
+        }
+        // 万が一パースに失敗した場合は、最低限「&」以降を削るフォールバック
+        return url.split('&')[0];
+      };
+
+      const youtubeUrl = cleanYoutubeUrl(rawUrl);
       const queryText = `動画内容の概要を作成してください: ${youtubeUrl}`;
       const geminiUrl = "https://gemini.google.com/app";
 
@@ -38,15 +63,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                     document.execCommand('insertText', false, text);
                     form.dispatchEvent(new Event('input', { bubbles: true }));
 
-                    // 少しだけ待ってから送信ボタンを叩く（ボタンの有効化を待つ）
                     setTimeout(() => {
                       const sendButton = document.querySelector('button[aria-label="送信"], button[aria-label="メッセージを送信"], button[aria-label="Send message"]');
                       
-                      // ボタンが「無効」でなければクリックする
                       if (sendButton && !sendButton.disabled) {
                         sendButton.click();
                       } else {
-                        // ボタンがまだ無効なら、最終手段としてEnterキーを送信
                         const enterEvent = new KeyboardEvent('keydown', {
                           key: 'Enter',
                           code: 'Enter',
@@ -55,7 +77,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                         });
                         form.dispatchEvent(enterEvent);
                       }
-                    }, 500); // 0.5秒の猶予を持たせることで、Reactの更新を待つ
+                    }, 500);
 
                   } else if (attempts < maxAttempts) {
                     attempts++;
