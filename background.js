@@ -20,18 +20,12 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
         try {
           var urlObj = new URL(url);
           var videoId = urlObj.searchParams.get('v');
-          
-          // 通常のwatch URLの場合
           if (videoId) return "https://www.youtube.com/watch?v=" + videoId;
-          
-          // 埋め込み（embed）の場合
           if (urlObj.pathname.includes('/embed/')) {
             var parts = urlObj.pathname.split('/');
             var embedId = parts[parts.indexOf('embed') + 1];
             if (embedId) return "https://www.youtube.com/watch?v=" + embedId;
           }
-          
-          // ショート動画（shorts）の場合
           if (urlObj.pathname.includes('/shorts/')) {
             var parts = urlObj.pathname.split('/');
             var shortsIndex = parts.indexOf('shorts');
@@ -39,7 +33,6 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
             if (shortsId) return "https://www.youtube.com/watch?v=" + shortsId;
           }
         } catch (e) {}
-        
         return url.split('&')[0];
       }
 
@@ -60,19 +53,18 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
                 console.log("[Gemini Extension] スクリプトが注入され、実行を開始します。");
                 var attempts = 0;
                 var hasSentMessage = false;
+                var isRetrying = false; // リトライ中フラグ
+                var retryCount = 0;     // 無限ループ防止のためのリトライ回数制限（最大2回まで）
 
-                // 確実に送信を行うための共通関数
                 function sendMessage(text) {
                   console.log("[Gemini Extension] メッセージ送信処理を実行します:", text);
                   var form = document.querySelector('div[contenteditable="true"]');
                   if (form) {
                     form.focus();
                     
-                    // 文字を流し込む
                     document.execCommand('insertText', false, text);
                     form.dispatchEvent(new Event('input', { bubbles: true }));
 
-                    // 少し待ってから送信アクションを実行（DOMの反映を確実に待つ）
                     setTimeout(function() {
                       var sendButton = document.querySelector('button[aria-label="送信"], button[aria-label="メッセージを送信"], button[aria-label="Send message"]');
                       
@@ -80,31 +72,9 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
                         sendButton.click();
                         console.log("[Gemini Extension] 送信ボタンをクリックしました。");
                       } else {
-                        // ボタンが押せない・見つからない場合は、複数のキーイベントを連続で発火して確実にEnterを認識させる
-                        var enterEventDown = new KeyboardEvent('keydown', {
-                          key: 'Enter',
-                          code: 'Enter',
-                          keyCode: 13,
-                          which: 13,
-                          bubbles: true,
-                          cancelable: true
-                        });
-                        var enterEventPress = new KeyboardEvent('keypress', {
-                          key: 'Enter',
-                          code: 'Enter',
-                          keyCode: 13,
-                          which: 13,
-                          bubbles: true,
-                          cancelable: true
-                        });
-                        var enterEventUp = new KeyboardEvent('keyup', {
-                          key: 'Enter',
-                          code: 'Enter',
-                          keyCode: 13,
-                          which: 13,
-                          bubbles: true,
-                          cancelable: true
-                        });
+                        var enterEventDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+                        var enterEventPress = new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+                        var enterEventUp = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
 
                         form.dispatchEvent(enterEventDown);
                         form.dispatchEvent(enterEventPress);
@@ -112,7 +82,7 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
                         console.log("[Gemini Extension] 強化版Enterキーイベントで送信をシミュレートしました。");
                       }
                       hasSentMessage = true;
-                    }, 800); // 待機時間を少し安全側に拡大
+                    }, 800);
                   } else {
                     console.warn("[Gemini Extension] 入力フォームが見つかりませんでした。");
                   }
@@ -133,7 +103,7 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
 
                     var pageText = document.body.innerText;
 
-                    // 【失敗・エラー応答の検知】
+                    // 【失敗・エラー応答の検知】（ただしリトライ中かつクールダウン期間中は誤爆を防ぐため即時判定を制限）
                     var hasError = (
                       pageText.indexOf("取得できませんでした") !== -1 || 
                       pageText.indexOf("取得することができませんでした") !== -1 ||
@@ -146,16 +116,30 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
                       pageText.indexOf("エラーが発生") !== -1
                     );
 
-                    if (hasError) {
+                    // もしエラーがあり、かつ「今まさにリトライ処理の直後（新しいメッセージを送ったばかり）」でなければエラーとみなす
+                    // （これにより画面に残った古いエラー文言による無限ループを完全に防止します）
+                    if (hasError && !isRetrying) {
+                      if (retryCount >= 2) {
+                        hasFinished = true;
+                        clearInterval(checkInterval);
+                        console.log("[Gemini Extension] 🛑 リトライ回数が上限（2回）に達したため、無限ループを防ぐため監視を終了します。");
+                        return;
+                      }
+
                       hasFinished = true;
                       clearInterval(checkInterval);
-                      console.log("[Gemini Extension] ⚠️ 失敗（エラー応答）を確実に検知しました。リトライプロンプトを送信します。");
+                      retryCount++;
+                      isRetrying = true; // リトライ中フラグを立てる
                       
-                      // リトライ時はもう一度送信フラグをリセットして再送できるようにする
-                      hasSentMessage = false;
+                      console.log("[Gemini Extension] ⚠️ 失敗を検知しました。リトライを実行します（回数:", retryCount, "）。");
+                      
                       setTimeout(function() {
                         sendMessage(retryText);
-                        watchForCompletion(); // 再監視を再開
+                        // リトライ送信後、少し時間を置いてから「リトライ中フラグ」を解除し、新しいエラー検知を再開する
+                        setTimeout(function() {
+                          isRetrying = false;
+                          watchForCompletion();
+                        }, 5000); // 5秒間は古いエラーの残骸による誤爆を完全に無視する
                       }, 1000);
                       return;
                     }
