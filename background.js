@@ -4,7 +4,11 @@ chrome.contextMenus.removeAll(function() {
     title: "Geminiで概要を作成",
     contexts: ["link", "page"],
     documentUrlPatterns: ["*://www.youtube.com/*"],
-    targetUrlPatterns: ["*://www.youtube.com/watch?v=*", "*://www.youtube.com/embed/*"]
+    targetUrlPatterns: [
+      "*://www.youtube.com/watch?v=*", 
+      "*://www.youtube.com/embed/*",
+      "*://www.youtube.com/shorts/*"
+    ]
   });
 });
 
@@ -16,13 +20,26 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
         try {
           var urlObj = new URL(url);
           var videoId = urlObj.searchParams.get('v');
+          
+          // 通常のwatch URLの場合
           if (videoId) return "https://www.youtube.com/watch?v=" + videoId;
+          
+          // 埋め込み（embed）の場合
           if (urlObj.pathname.includes('/embed/')) {
             var parts = urlObj.pathname.split('/');
             var embedId = parts[parts.indexOf('embed') + 1];
             if (embedId) return "https://www.youtube.com/watch?v=" + embedId;
           }
+          
+          // ショート動画（shorts）の場合
+          if (urlObj.pathname.includes('/shorts/')) {
+            var parts = urlObj.pathname.split('/');
+            var shortsIndex = parts.indexOf('shorts');
+            var shortsId = parts[shortsIndex + 1];
+            if (shortsId) return "https://www.youtube.com/watch?v=" + shortsId;
+          }
         } catch (e) {}
+        
         return url.split('&')[0];
       }
 
